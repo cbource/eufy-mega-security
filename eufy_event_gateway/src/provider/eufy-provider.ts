@@ -40,6 +40,7 @@ import { c31PreferenceNames, c31PreferenceValue, c31PreferenceReadField, validat
 
 const logger = createLogger("provider");
 const DSK_REFRESH_SKEW_MILLISECONDS = 60_000;
+const STATION_REFRESH_DISCONNECT_FAILURES = 3;
 
 /** Return whether a cached PPCS lookup key should be replaced before another session starts. */
 export function dskKeyNeedsRefresh(
@@ -47,6 +48,20 @@ export function dskKeyNeedsRefresh(
   now = Date.now(),
 ): boolean {
   return !value || (value.expiresAt !== null && value.expiresAt <= now + DSK_REFRESH_SKEW_MILLISECONDS);
+}
+
+/**
+ * Keep an established station connection through isolated background read failures.
+ *
+ * Startup remains disconnected until a read succeeds. Once connected, three
+ * consecutive failed refreshes are required before the command channel is
+ * reported unavailable.
+ */
+export function stationConnectedAfterRefreshFailure(
+  wasConnected: boolean,
+  consecutiveFailures: number,
+): boolean {
+  return wasConnected && consecutiveFailures < STATION_REFRESH_DISCONNECT_FAILURES;
 }
 
 /** Credentials, storage, and transport limits for one Mega account. */
@@ -2298,6 +2313,15 @@ export class EufyProvider implements CameraProvider, CaptchaProvider {
   #recordStationRefreshFailure(serial: string, error: unknown): void {
     const failures = (this.#stationRefreshFailures.get(serial) ?? 0) + 1;
     this.#stationRefreshFailures.set(serial, failures);
+    const station = this.#stations.get(serial);
+    if (station) {
+      const connected = stationConnectedAfterRefreshFailure(station.connected, failures);
+      if (connected !== station.connected) {
+        const updated = { ...station, connected };
+        this.#stations.set(serial, updated);
+        this.#events?.station(updated);
+      }
+    }
     if (failures === 1 || failures % 15 === 0) {
       logger.warn("station_refresh_unavailable", `HomeBase state refresh unavailable: failures=${failures} error=${safeError(error)}`);
     }
@@ -2483,9 +2507,11 @@ export class EufyProvider implements CameraProvider, CaptchaProvider {
         this.#events?.station(updated);
         return updated;
       } catch (error) {
-        const updated = { ...this.#requireStation(serial), connected: false };
-        this.#stations.set(serial, updated);
-        this.#events?.station(updated);
+        if (interruptMedia) {
+          const updated = { ...this.#requireStation(serial), connected: false };
+          this.#stations.set(serial, updated);
+          this.#events?.station(updated);
+        }
         throw error;
       } finally {
         session.close();
