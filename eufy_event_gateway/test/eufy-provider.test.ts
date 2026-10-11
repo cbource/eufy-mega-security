@@ -83,10 +83,11 @@ test("retains only the device's own reported firmware and hardware metadata", ()
   assert.equal(devices[1]?.hardwareVersion, null);
 });
 
-test("keeps an established station connected through two isolated refresh failures", () => {
+test("keeps an established station connected through three isolated refresh failures", () => {
   assert.equal(stationConnectedAfterRefreshFailure(true, 1), true);
   assert.equal(stationConnectedAfterRefreshFailure(true, 2), true);
-  assert.equal(stationConnectedAfterRefreshFailure(true, 3), false);
+  assert.equal(stationConnectedAfterRefreshFailure(true, 3), true);
+  assert.equal(stationConnectedAfterRefreshFailure(true, 4), false);
 });
 
 test("does not invent a station connection during failed startup reads", () => {

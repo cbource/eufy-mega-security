@@ -40,7 +40,7 @@ import { c31PreferenceNames, c31PreferenceValue, c31PreferenceReadField, validat
 
 const logger = createLogger("provider");
 const DSK_REFRESH_SKEW_MILLISECONDS = 60_000;
-const STATION_REFRESH_DISCONNECT_FAILURES = 3;
+const STATION_REFRESH_DISCONNECT_FAILURES = 4;
 
 /** Return whether a cached PPCS lookup key should be replaced before another session starts. */
 export function dskKeyNeedsRefresh(
@@ -53,7 +53,7 @@ export function dskKeyNeedsRefresh(
 /**
  * Keep an established station connection through isolated background read failures.
  *
- * Startup remains disconnected until a read succeeds. Once connected, three
+ * Startup remains disconnected until a read succeeds. Once connected, four
  * consecutive failed refreshes are required before the command channel is
  * reported unavailable.
  */
