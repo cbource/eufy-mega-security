@@ -38,7 +38,7 @@ import type { MegaAuthResult, MegaCaptcha, MegaIdentity, MegaInventory, MegaResu
 // same challenge and session-recovery behaviour.
 const CAPTCHA_REQUIRED = new Set([100032, 100033]);
 const VERIFICATION_REQUIRED = 26052;
-const TRANSIENT_IDENTITY_ERRORS = new Set([4404, 4406, 100028, 100030]);
+const TRANSIENT_IDENTITY_ERRORS = new Set([4404, 4406, 100030]);
 const AUTH_SESSION_INVALID_CODES = new Set([4404, 26084, 26884]);
 const MEDIA_HOST = /^security-app(?:-(?:eu|ie))?\.eufylife\.com$/;
 const MEDIA_OBJECT_HOST = /^zhixin-security-[a-z0-9]+(?:-[a-z0-9]+)*\.s3(?:\.[a-z]{2}(?:-[a-z0-9]+)+-\d)?\.amazonaws\.com$/;
@@ -329,6 +329,47 @@ export class MegaClient {
     if (!isRecord(decoded)) return [];
     const values = Array.isArray(decoded.ciphers) ? decoded.ciphers : Array.isArray(decoded.data) ? decoded.data : [];
     return values.filter(isRecord);
+  }
+
+  /**
+   * Resolve an owned event-picture key from account encryption metadata.
+   * Picture key identifiers are separate from live transport cipher identifiers.
+   * Shared-owner and protected keys fail closed. The returned buffer belongs to
+   * the caller, which must clear it after use. This method never caches or
+   * persists keys; response strings remain subject to JavaScript heap cleanup.
+   */
+  async getEventImageKey(keyId: number, ownerId: string): Promise<Buffer> {
+    if (!this.isAuthenticated || !Number.isInteger(keyId) || keyId < 2 || keyId > 255 ||
+      !ownerId || ownerId !== this.#session!.userId) {
+      throw new Error("Event picture key unavailable");
+    }
+    const token = this.#session!.authToken;
+    const signal = this.#requestLifetime.signal;
+    let decoded: unknown;
+    try {
+      const result = await this.#call("security", "/v2/commerce/get_current_subscription", {
+        new_etoe_version: 1, service_code: "all.service", is_new_version: 1,
+        has_eufy_protection_pro: 2, transaction: `${this.#now()}`,
+      }, false);
+      decoded = this.#decodeResult(result);
+    } catch {
+      throw new Error("Event picture key lookup failed");
+    }
+    if (signal.aborted) throw new Error("Event picture key lookup failed");
+    if (signal !== this.#requestLifetime.signal || this.#session?.authToken !== token ||
+      this.#session.userId !== ownerId) {
+      throw new Error("Event picture key session changed");
+    }
+    if (!isRecord(decoded) || !Array.isArray(decoded.simple_security_keys) || decoded.simple_security_keys.length > 256) {
+      throw new Error("Event picture key unavailable");
+    }
+    const matches = decoded.simple_security_keys.filter((entry: unknown) =>
+      isRecord(entry) && Number.isInteger(entry.pincode_id) && entry.pincode_id === keyId);
+    const value: unknown = matches.length === 1 ? matches[0].private_key : undefined;
+    if (typeof value !== "string" || !/^[a-fA-F0-9]{64}$/.test(value)) {
+      throw new Error("Event picture key unavailable");
+    }
+    return Buffer.from(value, "hex");
   }
 
   /**
