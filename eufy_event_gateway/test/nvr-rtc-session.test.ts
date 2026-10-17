@@ -50,7 +50,7 @@ function keyframePackets(frame: Buffer, sequence: number): Buffer[] {
   });
 }
 
-for (const scenario of ['h264', 'h265', 'sequence-gap', 'legacy-first-lens', 'power', 'power-noop', 'power-cancel', 'legacy-zero-segment', 'power-unordered', 'power-undefined', 'state-read', 'state-bad-ack-padding', 'state-cancel', 'state-uncorrelated-push', 'state-uncorrelated-error', 'state-matching-error', 'state-uncorrelated-cancel', 'state-uncorrelated-timeout', 'zero-segment-lifecycle', 'identity', 'wrong-channel', 'wrong-type', 'fingerprint', 'unknown-channel', 'cancel-start', 'framing-flags', 'heartbeat-changed', 'heartbeat-short', 'heartbeat-long'] as const) test(`real peers exercise ${scenario} with bounded cleanup`, { timeout: 45000 }, async context => {
+for (const scenario of ['h264', 'h265', 'sequence-gap', 'legacy-first-lens', 'power', 'power-noop', 'power-cancel', 'guard', 'legacy-zero-segment', 'power-unordered', 'power-undefined', 'state-read', 'state-bad-ack-padding', 'state-cancel', 'state-uncorrelated-push', 'state-uncorrelated-error', 'state-matching-error', 'state-uncorrelated-cancel', 'state-uncorrelated-timeout', 'zero-segment-lifecycle', 'identity', 'wrong-channel', 'wrong-type', 'fingerprint', 'unknown-channel', 'cancel-start', 'framing-flags', 'heartbeat-changed', 'heartbeat-short', 'heartbeat-long'] as const) test(`real peers exercise ${scenario} with bounded cleanup`, { timeout: 45000 }, async context => {
   const codec = scenario === 'h265' || scenario === 'sequence-gap' ? 'h265' : 'h264';
   const server = new WebSocketServer({ port: 0 });
   await once(server, 'listening');
@@ -94,6 +94,20 @@ for (const scenario of ['h264', 'h265', 'sequence-gap', 'legacy-first-lens', 'po
           const receipt=application(1350,request.segment,Buffer.alloc(132,0x55));receipt[12]=3;
           for(const packet of nvrPackets(receipt,sequence++,1))channel.send(packet);
         },20);
+        return;
+      }
+      if (body.cmd === 1224) {
+        assert.equal(scenario, 'guard'); assert.equal(request.channel, 255); assert.ok(request.segment > 0);
+        assert.deepEqual(body, { account_id: 'synthetic-administrator', cmd: 1224, mValue3: 0,
+          payload: { mode_type: commands.filter(command => command === 1224).length === 1 ? 1 : 2,
+            user_name: 'Synthetic' } });
+        const wrong = application(1350, request.segment, Buffer.alloc(132, 0x55)); wrong[12] = 3;
+        for (const packet of nvrPackets(wrong, sequence++, 1)) channel.send(packet);
+        const receipt = application(1350, request.segment, Buffer.alloc(132, 0x55));
+        for (const packet of nvrPackets(receipt, sequence++, 1)) channel.send(packet);
+        const effective = application(1151, 0, Buffer.alloc(4));
+        effective.writeInt32LE(body.payload.mode_type === 1 ? 1 : 0, 16);
+        for (const packet of nvrPackets(effective, sequence++, 1)) channel.send(packet);
         return;
       }
       if (body.cmd === 1103) {
@@ -218,6 +232,7 @@ for (const scenario of ['h264', 'h265', 'sequence-gap', 'legacy-first-lens', 'po
   }
   const session = new NvrRtcSession({ station: 'synthetic-station', camera: 'synthetic-camera', channel: 3,
     powerTrial: scenario.startsWith('power'),
+    guardTrial: scenario === 'guard', ...(scenario === 'guard' ? { userName: 'Synthetic' } : {}),
     cameraType: scenario === 'legacy-first-lens' ? 14 : 301, sensor: scenario === 'legacy-first-lens' ? 0 : 1,
     administrator: 'synthetic-administrator', context: { host: 'security-smart-ie.eufylife.com', region: 'IE',
       authToken: 'synthetic-token', gtoken: 'synthetic-gtoken', sign: 'synthetic-sign' },
@@ -266,6 +281,20 @@ for (const scenario of ['h264', 'h265', 'sequence-gap', 'legacy-first-lens', 'po
       assert.equal(attached,0);assert.equal(snapshots,0);assert.equal(diagnosticMedia,0);
       assert.ok(session.stats.staleReplies >= 14);
       await session.close();return;
+    }
+    if (scenario === 'guard') {
+      await session.prepareGuardTrial();
+      const phase = new AbortController(); let dispatched = 0;
+      await session.validateGuardTrial(phase.signal);
+      await session.writeGuardTrial(1, phase.signal, () => { dispatched++; });
+      await session.confirmGuardEffectiveTrial(1, phase.signal);
+      await session.validateGuardTrial(phase.signal);
+      await session.writeGuardTrial(2, phase.signal, () => { dispatched++; });
+      await session.confirmGuardEffectiveTrial(2, phase.signal);
+      assert.equal(dispatched, 2); assert.deepEqual(commands, [9100, 9100, 1224, 9100, 1224]);
+      assert.equal(attached, 0); assert.equal(snapshots, 0); assert.equal(diagnosticMedia, 0);
+      assert.ok(session.stats.staleReplies >= 2);
+      await session.close(); return;
     }
     if (scenario.startsWith('state-')) {
       if (['state-cancel', 'state-uncorrelated-cancel', 'state-uncorrelated-timeout', 'state-matching-error'].includes(scenario)) {

@@ -32,7 +32,7 @@ export interface GatewayConfig {
   /** Default-off, consented NVR video trials. Normal capabilities remain unchanged. */
   readonly experimentalNvrLive: boolean;
 
-  /** Separate default-off physical camera-power trial, requiring explicit observation consent. */
+  /** Separate default-off physical NVR control trials, each requiring explicit observation consent. */
   readonly experimentalNvrControls: boolean;
 
   /** Default-off native standalone doorbell video test, requiring private-media consent. */

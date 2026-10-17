@@ -38,7 +38,7 @@ export function diagnosticsPage(): string {
 <a id="nvr-download" hidden download="eufy-nvr-test.mp4">Download private test clip</a>
 <p>The clip stays in this browser and is never uploaded automatically. HEVC may require a compatible player. If the picture does not play, keep the clip private and share only the nvr_live_trial_failed log line publicly.</p></details>
 <details><summary>Experimental NVR camera-power test</summary>
-<p>For a T8E00 camera through T8N00 only. Enable Experimental NVR video, Experimental model controls and Experimental NVR camera-power test in the app options. Close all viewers first.</p>
+<p>For a T8E00 camera through T8N00 only. Enable Experimental NVR video, Experimental model controls and Experimental NVR control tests in the app options. Close all viewers first.</p>
 <p>This temporarily changes the camera's power/privacy state and attempts to restore it. Turning it off can interrupt recording and notifications. Hardware behaviour in this gateway is unconfirmed. Use this only while you can observe the camera and restore its original state in the Eufy app if needed.</p>
 <label>Original state, checked in Eufy <select id="nvr-power-original"><option value="">Choose the recorded original</option><option value="on">On</option><option value="off">Off</option></select></label>
 <label>Temporary test state <select id="nvr-power-target"><option value="">Choose the temporary state</option><option value="off">Off</option><option value="on">On</option></select></label>
@@ -47,6 +47,13 @@ export function diagnosticsPage(): string {
 <button id="nvr-power-start">Test and restore camera power</button><button id="nvr-power-cancel">Cancel and request restoration</button>
 <p>Cancelling or leaving this page requests restoration on the gateway, but cannot show its final result. It is not an immediate stop. Check the camera against your recorded original state and restore it manually if needed. A lost connection or gateway restart can prevent automatic restoration.</p>
 <pre id="nvr-power-status" role="status">No power test started. If you left an earlier test, check and restore its recorded original state in Eufy.</pre></details>
+<details><summary>Experimental NVR Schedule guard-mode test</summary>
+<p>For a T8E00 camera through T8N00 only. Enable Experimental NVR video, Experimental model controls and Experimental NVR controls in the app options. Close all viewers first.</p>
+<p>This station-wide test is available only while the NVR is configured for Schedule. It temporarily changes the whole NVR to Home, which may arm cameras or alarms, then attempts to restore Schedule without changing its schedule.</p>
+<label><input id="nvr-guard-consent" type="checkbox"> I can observe the NVR, agree to the temporary Home mode, and can restore Schedule in the Eufy app if needed.</label>
+<button id="nvr-guard-start">Test Home and restore Schedule</button><button id="nvr-guard-cancel">Cancel and request restoration</button>
+<p>Cancelling or leaving this page requests restoration but cannot show its final result. A lost connection or gateway restart can prevent automatic restoration. Check the whole NVR in Eufy if the result is uncertain.</p>
+<pre id="nvr-guard-status" role="status">No guard-mode test started. Confirm the NVR is on Schedule before starting.</pre></details>
 <details><summary>Experimental standalone doorbell video test</summary>
 <p>Enable this test in the app options first, then select one standalone Video Doorbell C30. Stop other viewers before testing. Normal Home Assistant live view stays unchanged.</p>
 <label><input id="doorbell-consent" type="checkbox"> I agree to request a ten-second private video clip from the selected doorbell.</label>
@@ -96,7 +103,7 @@ export function diagnosticsPage(): string {
 <script>
 const el = id => document.getElementById(id);
 let targets = [], stream = null, poll = null, activeTrialSerial = null, nvrJob = null, nvrClip = null, doorbellJob = null, doorbellClip = null;
-let indexJob = null, motionJob = null, lockStatusJob = null, nvrPowerJob = null;
+let indexJob = null, motionJob = null, lockStatusJob = null, nvrPowerJob = null, nvrGuardJob = null;
 let cloudJob = null, cloudLoadJob = null, cloudClip = null, cloudSelection = null, cloudGeneration = 0;
 let cloudCalendarKey = null;
 const show = value => { el('status').textContent = value; };
@@ -255,6 +262,32 @@ action('nvr-power-start', async () => {
     el('nvr-power-status').textContent = 'Power test: ' + result.outcome + '. Reported original restored. Did the physical camera match the temporary state and return to ' + original + '? Hardware confirmation is still required. Share only this summary and what you observed.';
   } catch { el('nvr-power-status').textContent = job.signal.aborted ? 'Cancellation requested. Gateway restoration may still be running. No final result is available here. Check and restore your recorded original (' + original + ') in Eufy if needed.' : failureMessage + ' If it failed, share only the nvr_power_trial_failed line.'; }
   finally { if(nvrPowerJob === job) nvrPowerJob = null; el('nvr-power-start').disabled = false; el('nvr-power-consent').checked = false; }
+});
+const cancelNvrGuard = () => { const active = Boolean(nvrGuardJob); if(nvrGuardJob) nvrGuardJob.abort(); el('nvr-guard-consent').checked = false; el('nvr-guard-status').textContent = active ? 'Cancellation requested. Check the NVR and restore Schedule in Eufy if needed.' : 'No guard-mode test running. Confirm Schedule and observation consent before starting.'; };
+el('nvr-guard-cancel').addEventListener('click', cancelNvrGuard);
+el('device').addEventListener('change', cancelNvrGuard);
+window.addEventListener('pagehide', cancelNvrGuard);
+action('nvr-guard-start', async () => {
+  const selected = el('device').value;
+  if(nvrGuardJob || !selected || !el('nvr-guard-consent').checked) throw Error('Select one T8E00, confirm the NVR is on Schedule, and agree to the temporary station-wide change.');
+  const job = new AbortController(); nvrGuardJob = job; el('nvr-guard-start').disabled = true;
+  let failureMessage = 'Guard-mode test could not be completed. Check the whole NVR and restore Schedule in Eufy if needed.';
+  el('nvr-guard-status').textContent = 'Testing Home and restoring Schedule. Keep observing the NVR. The full operation can take over two minutes.';
+  try {
+    const response = await fetch('api/cameras/' + encodeURIComponent(selected) + '/nvr-guard-trial', {
+      method:'POST',headers:{Authorization:'Bearer ' + el('token').value,'Content-Type':'application/json'},
+      body:JSON.stringify({consent:true,target:'home'}),cache:'no-store',signal:job.signal });
+    const result = await response.json();
+    if(job.signal.aborted || el('device').value !== selected) return;
+    if(!response.ok) {
+      const stage = ['admission','busy','inventory','identity','baseline','send','receipt','readback','restore','cleanup','cancelled','shutdown','timeout'].includes(result.stage) ? result.stage : 'restore';
+      failureMessage = 'Guard-mode test did not complete: ' + stage + '. Check the whole NVR and restore Schedule in Eufy if needed.';
+      throw Error('Guard-mode test failed');
+    }
+    if(!['home_confirmed','home_unconfirmed_restored'].includes(result.outcome) || result.restored !== true || result.scheduleUnchanged !== true) throw Error('Invalid guard summary');
+    el('nvr-guard-status').textContent = 'Guard-mode test: ' + result.outcome + '. Schedule and its original schedule data were reported restored. Did the NVR enter Home and return to Schedule? Hardware confirmation is still required. Share only this summary and what you observed.';
+  } catch { el('nvr-guard-status').textContent = job.signal.aborted ? 'Cancellation requested. Gateway restoration may still be running. Check the NVR and restore Schedule in Eufy if needed.' : failureMessage + ' If it failed, share only the nvr_guard_trial_failed line.'; }
+  finally { if(nvrGuardJob === job) nvrGuardJob = null; el('nvr-guard-start').disabled = false; el('nvr-guard-consent').checked = false; }
 });
 const cancelLockStatus = () => { if(lockStatusJob) lockStatusJob.abort(); el('lock-status-consent').checked = false; };
 el('lock-status-cancel').addEventListener('click', cancelLockStatus);

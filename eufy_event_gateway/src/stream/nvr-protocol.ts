@@ -102,6 +102,21 @@ export function nvrCameraPowerCommand(account: string, segment: number, channel:
   return Buffer.concat([header, body]);
 }
 
+/** Encode only the restricted station guard values used by the recovery trial. */
+export function nvrGuardModeCommand(account: string, userName: string, segment: number, mode: 1 | 2): Buffer {
+  if (typeof account !== "string" || !/^[A-Za-z0-9_-]{1,255}$/.test(account)
+    || typeof userName !== "string" || userName.length > 128 || /[\u0000-\u001f\u007f]/.test(userName)
+    || !Number.isInteger(segment) || segment < 1 || segment > 254 || (mode !== 1 && mode !== 2)) {
+    throw new NvrTrialError("framing");
+  }
+  const body = Buffer.from(JSON.stringify({ account_id: account, cmd: 1224, mValue3: 0,
+    payload: { mode_type: mode, user_name: userName } }));
+  const header = Buffer.alloc(16);
+  header.write("XZYH"); header.writeUInt16LE(1350, 4); header.writeUInt32LE(body.length, 6);
+  header[11] = segment; header[12] = 255; header[15] = 2;
+  return Buffer.concat([header, body]);
+}
+
 /**
  * A single explicit query result, separate from inventory or confirmed controls.
  * Missing or unsupported settings stay unknown. No identity or received text

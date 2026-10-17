@@ -14,7 +14,8 @@ import { NvrPtcsReassembler, type NvrPtcsReassemblyStats } from "./nvr-ptcs-reas
 import { VideoParameterSetCache } from "./live-stream-manager.js";
 import { installNvrIceTiming } from "./nvr-ice-timing.js";
 import { NvrPowerError, type NvrCameraPower } from "../provider/nvr-power-trial.js";
-import { NvrTrialError, nvrCameraPowerCommand, nvrApplication, nvrCandidate, nvrCommand, nvrHeartbeat, nvrJson,
+import { NvrGuardError } from "../provider/nvr-guard-trial.js";
+import { NvrTrialError, nvrCameraPowerCommand, nvrGuardModeCommand, nvrApplication, nvrCandidate, nvrCommand, nvrHeartbeat, nvrJson,
   nvrMatchCamera, nvrNetworkHost, nvrOffer, nvrPackets, nvrRecord, nvrVideo, nvrStateSummary, type NvrStateSummary, type NvrTrialStage, type NvrTrialReason } from "./nvr-protocol.js";
 
 const HEARTBEAT_ECHO = nvrHeartbeat();
@@ -46,6 +47,9 @@ export interface NvrRtcOptions {
   /** Provider-selected lens. Omission preserves the original T8E00 trial. */
   readonly sensor?: 0 | 1;
   readonly administrator: string;
+
+  /** Freshly bound administrator display name required by the closed guard command. */
+  readonly userName?: string;
   readonly context: NvrSignallingContext;
   readonly signal: AbortSignal;
   readonly current: () => boolean;
@@ -56,6 +60,9 @@ export interface NvrRtcOptions {
 
   /** Separate provider admission for the manual camera-power trial, never ordinary live view. */
   readonly powerTrial?: boolean;
+
+  /** Separate provider admission for the station-wide Schedule recovery trial. */
+  readonly guardTrial?: boolean;
 }
 
 interface PendingRequest {
@@ -133,6 +140,12 @@ export class NvrRtcSession {
   #powerMode = false;
   #powerReceipt: { readonly segment: number; readonly deadline: number; readonly resolve: () => void;
     readonly reject: (error: NvrPowerError) => void; readonly timer: NodeJS.Timeout; readonly detach: () => void } | null = null;
+  #guardMode = false;
+  #guardReceipt: { readonly segment: number; readonly deadline: number; readonly resolve: () => void;
+    readonly reject: (error: NvrGuardError) => void; readonly timer: NodeJS.Timeout; readonly detach: () => void } | null = null;
+  #guardExpectedEffective: 1 | 2 | null = null;
+  #guardEffectiveValue: number | null = null;
+  #guardEffectiveDeadline = 0;
   #outSequence = 0;
   #operations = 0;
   #chain: Promise<void> = Promise.resolve();
@@ -178,7 +191,8 @@ export class NvrRtcSession {
 
   /** Negotiate, correlate fresh discovery, attach the sink, and request video once. */
   async start(): Promise<void> {
-    if (this.options.powerTrial) throw new NvrPowerError("admission");
+    if (this.options.powerTrial || this.options.guardTrial) throw this.options.guardTrial
+      ? new NvrGuardError("admission") : new NvrPowerError("admission");
     await this.#connectAndDiscover();
     this.options.ready(this.output, () => this.#codec);
     this.#stage = "start";
@@ -250,9 +264,92 @@ export class NvrRtcSession {
     });
   }
 
+  /** Open one station-wide guard-only connection after separate consent and admission. */
+  async prepareGuardTrial(): Promise<void> {
+    if (!this.options.guardTrial || this.options.cameraType !== 301 || this.#started
+      || typeof this.options.userName !== "string") throw new NvrGuardError("admission");
+    this.#guardMode = true;
+    await this.#connectAndDiscover();
+    if (this.#channels.get("WebrtcDataChannel")?.ordered !== true) throw new NvrGuardError("identity");
+  }
+
+  /** Reconfirm the selected child on the same connection before a guard write. */
+  async validateGuardTrial(signal: AbortSignal): Promise<void> {
+    this.#guardTrialGuard();
+    const response = await this.#guardQuery(9100, signal);
+    nvrMatchCamera(response, this.options.camera, this.options.channel, 301);
+    this.#guardTrialGuard();
+  }
+
+  /** Send Home or Schedule once. Its receipt is not independent state confirmation. */
+  async writeGuardTrial(mode: 1 | 2, signal: AbortSignal, dispatched: () => void): Promise<void> {
+    this.#guardTrialGuard(); signal.throwIfAborted();
+    if (this.#pending || this.#powerReceipt || this.#guardReceipt || this.#segment >= 254
+      || mode !== 1 && mode !== 2) throw new NvrGuardError("send");
+    const channel = this.#channels.get("WebrtcDataChannel");
+    if (!channel || channel.readyState !== "open" || channel.bufferedAmount > 1024 * 1024) throw new NvrGuardError("send");
+    const segment = ++this.#segment;
+    const frame = nvrGuardModeCommand(this.options.administrator, this.options.userName ?? "", segment, mode);
+    const packets = nvrPackets(frame, this.#outSequence++ % 65536, Date.now());
+    return await new Promise<void>((resolve, reject) => {
+      const abort = (): void => this.#finishGuardReceipt(new NvrGuardError("cancelled"));
+      const timer = setTimeout(() => this.#finishGuardReceipt(new NvrGuardError("receipt")), 15_000);
+      this.#guardReceipt = { segment, deadline: performance.now() + 15_000, resolve, reject, timer,
+        detach: () => signal.removeEventListener("abort", abort) };
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) { abort(); return; }
+      try {
+        this.#guardTrialGuard(); signal.throwIfAborted(); dispatched();
+        this.#guardExpectedEffective = mode; this.#guardEffectiveValue = null;
+        this.#guardEffectiveDeadline = performance.now() + 15_000;
+        for (const packet of packets) channel.send(packet);
+      } catch { this.#finishGuardReceipt(new NvrGuardError("send")); }
+      finally { frame.fill(0); }
+    });
+  }
+
+  /** Require the NVR's own fresh effective-mode signal after the matching write. */
+  async confirmGuardEffectiveTrial(mode: 1 | 2, signal: AbortSignal): Promise<void> {
+    this.#guardTrialGuard(); signal.throwIfAborted();
+    if (this.#guardExpectedEffective !== mode || this.#guardEffectiveDeadline <= 0) throw new NvrGuardError("readback");
+    while (this.#guardEffectiveValue === null && performance.now() < this.#guardEffectiveDeadline) {
+      await new Promise<void>((resolve, reject) => {
+        const done = (): void => { signal.removeEventListener("abort", abort); resolve(); };
+        const timer = setTimeout(done, 50);
+        const abort = (): void => { clearTimeout(timer); signal.removeEventListener("abort", abort); reject(new NvrGuardError("cancelled")); };
+        signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) abort();
+      });
+      this.#guardTrialGuard(); signal.throwIfAborted();
+    }
+    if (this.#guardEffectiveValue === null) throw new NvrGuardError("readback");
+  }
+
   #powerGuard(): void {
     this.#guard();
     if (!this.#powerMode || !this.options.powerTrial || this.#startSent || this.#channels.get("WebrtcDataChannel")?.ordered !== true) throw new NvrPowerError("identity");
+  }
+
+  #guardTrialGuard(): void {
+    this.#guard();
+    if (!this.#guardMode || !this.options.guardTrial || this.#startSent
+      || this.#channels.get("WebrtcDataChannel")?.ordered !== true) throw new NvrGuardError("identity");
+  }
+
+  async #guardQuery(command: 9100, signal: AbortSignal): Promise<Record<string, unknown>> {
+    signal.throwIfAborted();
+    if (this.#pending || this.#powerReceipt || this.#guardReceipt) throw new NvrGuardError("busy");
+    const operation = this.#request(command, 5_000);
+    const pending = this.#pending as PendingRequest | null;
+    const abort = (): void => {
+      if (pending && this.#pending === pending) {
+        clearTimeout(pending.timer); this.#pending = null; pending.reject(new NvrGuardError("cancelled"));
+      }
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    try { const result = await operation; signal.throwIfAborted(); return result; }
+    finally { signal.removeEventListener("abort", abort); }
   }
 
   async #powerQuery(command: 9100 | 1103, signal: AbortSignal): Promise<Record<string, unknown>> {
@@ -277,6 +374,13 @@ export class NvrRtcSession {
     const pending = this.#powerReceipt;
     if (!pending) return;
     this.#powerReceipt = null; clearTimeout(pending.timer); pending.detach();
+    if (error) pending.reject(error); else pending.resolve();
+  }
+
+  #finishGuardReceipt(error?: NvrGuardError): void {
+    const pending = this.#guardReceipt;
+    if (!pending) return;
+    this.#guardReceipt = null; clearTimeout(pending.timer); pending.detach();
     if (error) pending.reject(error); else pending.resolve();
   }
 
@@ -323,6 +427,8 @@ export class NvrRtcSession {
     if (this.#closing) return this.#closing;
     this.#retired = true;
     this.#finishPowerReceipt(new NvrPowerError("shutdown"));
+    this.#finishGuardReceipt(new NvrGuardError("shutdown"));
+    this.#guardExpectedEffective = null; this.#guardEffectiveValue = null; this.#guardEffectiveDeadline = 0;
     this.#negotiation.abort();
     this.#abort.abort();
     this.options.signal.removeEventListener("abort", this.#externalAbort);
@@ -583,6 +689,15 @@ export class NvrRtcSession {
       } else if (!this.output.write(video.bytes)) throw new NvrTrialError("video");
       return;
     }
+    if (this.#guardMode && frame.command === 1151 && frame.payload.length >= 4 && frame.payload.length <= 132
+      && performance.now() < this.#guardEffectiveDeadline) {
+      const value = frame.payload.readInt32LE(0);
+      if (this.#guardExpectedEffective === 1 && value === 1
+        || this.#guardExpectedEffective === 2 && [0, 1, 3, 4, 5, 47].includes(value)) {
+        this.#guardEffectiveValue = value;
+      } else this.stats.staleReplies++;
+      return;
+    }
     if (this.#powerReceipt && frame.command === 1350) {
       const pending = this.#powerReceipt;
       if (frame.channel === this.options.channel && frame.segment === pending.segment && frame.payload.length === 132
@@ -593,9 +708,19 @@ export class NvrRtcSession {
       } else this.stats.staleReplies++;
       return;
     }
+    if (this.#guardReceipt && frame.command === 1350) {
+      const pending = this.#guardReceipt;
+      if (frame.channel === 255 && frame.segment === pending.segment && frame.payload.length === 132
+        && performance.now() < pending.deadline) {
+        let json = false;
+        try { JSON.parse(frame.payload.toString("utf8")); json = true; } catch { /* The source receipt is binary. */ }
+        if (!json) this.#finishGuardReceipt(); else this.stats.staleReplies++;
+      } else this.stats.staleReplies++;
+      return;
+    }
     const pending = this.#pending;
     if (!pending || frame.channel !== 255 || frame.segment !== pending.segment && (frame.segment !== 0 || pending.command === 1103)) { this.stats.staleReplies++; return; }
-    if ((pending.command === 1103 || this.#powerMode && pending.command === 9100)
+    if ((pending.command === 1103 || (this.#powerMode || this.#guardMode) && pending.command === 9100)
       && (frame.segment !== pending.segment || performance.now() >= pending.deadline)) { this.stats.staleReplies++; return; }
     if (frame.segment === 0) this.stats.segmentNotEchoed++;
     if (frame.command === 1350 && frame.payload.length >= 4
