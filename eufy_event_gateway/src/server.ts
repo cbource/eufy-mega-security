@@ -9,6 +9,7 @@
  * it does not parse Mega payloads or open camera sockets.
  */
 import { NvrPowerError, type NvrPowerRequest } from "./provider/nvr-power-trial.js";
+import { NvrGuardError, type NvrGuardRequest } from "./provider/nvr-guard-trial.js";
 import { T85V0StatusError } from "./provider/t85v0-status.js";
 import { LocalMotionError } from "./stream/local-motion-trial.js";
 import { C31IndexError } from "./stream/c31-recording-index.js";
@@ -642,6 +643,43 @@ export class GatewayServer {
         } catch (error) {
           const failure = error instanceof NvrPowerError ? error : new NvrPowerError("restore", true);
           if (!response.destroyed) json(response, 409, { stage: failure.stage, manualRestoreRequired: failure.manualRestoreRequired });
+        } finally {
+          clearTimeout(deadline); controller.abort(); response.removeListener("close", abort);
+          request.removeListener("aborted", abort); this.#nvrTrialJobs.delete(controller);
+        }
+        return;
+      }
+      if (request.method === "POST" && segments[0] === "api" && segments[1] === "cameras"
+        && segments[3] === "nvr-guard-trial" && segments.length === 4) {
+        response.setHeader("cache-control", "no-store");
+        if (!this.config.apiToken || !this.config.experimentalNvrControls || !this.config.experimentalNvrLive
+          || !this.config.experimentalModelControls || !this.provider.testNvrGuardMode) {
+          return json(response, 409, { stage: "admission", manualRestoreRequired: false });
+        }
+        if (!this.state.hasCamera(segments[2]!)) return json(response, 404, { stage: "admission", manualRestoreRequired: false });
+        if (url.search) return json(response, 400, { stage: "admission", manualRestoreRequired: false });
+        if ((request.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase() !== "application/json") {
+          return json(response, 415, { stage: "admission", manualRestoreRequired: false });
+        }
+        let body: NvrGuardRequest;
+        try { body = await readNvrGuardBody(request); }
+        catch { return json(response, 400, { stage: "admission", manualRestoreRequired: false }); }
+        if (this.#nvrTrialJobs.size || this.#recordingIndexJobs.size || this.streams.hasActiveSession(segments[2]!)) {
+          return json(response, 409, { stage: "busy", manualRestoreRequired: false });
+        }
+        const controller = new AbortController(); this.#nvrTrialJobs.add(controller);
+        const deadline = setTimeout(() => controller.abort(), 120_000);
+        const abort = (): void => { if (!response.writableEnded) controller.abort(); };
+        response.once("close", abort); request.once("aborted", abort);
+        if (request.aborted || response.destroyed) controller.abort();
+        try {
+          const result = await this.provider.testNvrGuardMode(segments[2]!, body, controller.signal);
+          if (!response.destroyed) json(response, 200, { outcome: result.outcome, restored: result.restored,
+            scheduleUnchanged: result.scheduleUnchanged, physicalConfirmationRequired: true });
+        } catch (error) {
+          const failure = error instanceof NvrGuardError ? error : new NvrGuardError("restore", true);
+          if (!response.destroyed) json(response, 409, { stage: failure.stage,
+            manualRestoreRequired: failure.manualRestoreRequired });
         } finally {
           clearTimeout(deadline); controller.abort(); response.removeListener("close", abort);
           request.removeListener("aborted", abort); this.#nvrTrialJobs.delete(controller);
@@ -1332,6 +1370,23 @@ async function readNvrPowerBody(request: IncomingMessage): Promise<NvrPowerReque
   const keys = [...text.matchAll(/"(?:\\.|[^"\\])*"\s*:/g)].map(match => JSON.parse(match[0].slice(0, match[0].lastIndexOf(":"))));
   if (keys.length !== 3 || new Set(keys).size !== 3 || !keys.every(key => ["consent", "originalPower", "target"].includes(key))) throw new SyntaxError("Duplicate or unknown power key");
   return { originalPower: value.originalPower as "on" | "off", target: value.target as "on" | "off" };
+}
+
+async function readNvrGuardBody(request: IncomingMessage): Promise<NvrGuardRequest> {
+  const text = await readBody(request);
+  const body: unknown = JSON.parse(text);
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new SyntaxError("Invalid guard consent");
+  const value = body as Record<string, unknown>;
+  if (Object.keys(value).length !== 2 || value.consent !== true || value.target !== "home") {
+    throw new SyntaxError("Invalid guard consent");
+  }
+
+  // Accepted values are flat, so every property token must be one unique allowed key.
+  const keys = [...text.matchAll(/"(?:\\.|[^"\\])*"\s*:/g)].map(match => JSON.parse(match[0].slice(0, match[0].lastIndexOf(":"))));
+  if (keys.length !== 2 || new Set(keys).size !== 2 || !keys.every(key => ["consent", "target"].includes(key))) {
+    throw new SyntaxError("Duplicate or unknown guard key");
+  }
+  return { target: "home" };
 }
 
 async function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {

@@ -10,6 +10,7 @@
  * Mega and PPCS details.
  */
 import type { NvrPowerRequest, NvrPowerSummary } from "./nvr-power-trial.js";
+import type { NvrGuardRequest, NvrGuardSummary } from "./nvr-guard-trial.js";
 import type { T85V0StatusSummary } from "./t85v0-status.js";
 import type { LocalMotionSummary } from "../stream/local-motion-trial.js";
 import type { C31IndexSummary } from "../stream/c31-recording-index.js";
@@ -85,6 +86,9 @@ export interface CameraProvider {
 
   /** Run one separately consented NVR camera-power test, retaining its lease through restoration. */
   testNvrCameraPower?(serial: string, request: NvrPowerRequest, signal: AbortSignal): Promise<NvrPowerSummary>;
+
+  /** Run one consented Schedule-to-Home NVR test, retaining its lease through restoration. */
+  testNvrGuardMode?(serial: string, request: NvrGuardRequest, signal: AbortSignal): Promise<NvrGuardSummary>;
 
   /** Query private NVR settings once, retiring the exclusive session before returning. */
   readNvrStateTrial?(serial: string, signal: AbortSignal): Promise<NvrStateSummary>;

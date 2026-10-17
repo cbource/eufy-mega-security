@@ -587,6 +587,13 @@ observation consent, a recorded original state and its own app option. It
 attempts restoration, but a lost connection can require manual restoration.
 Hardware behaviour is unconfirmed, and normal controls stay unavailable.
 
+The [NVR Schedule guard-mode test](docs/NVR_GUARD_MODE_TEST.md) is also off by
+default and limited to the same exact pairing. It temporarily changes the whole
+T8N00 from Schedule to Home, confirms fresh cloud state, and restores Schedule
+with the NVR's fresh effective-mode report and byte-identical schedule data. A lost connection can still require manual
+restoration, hardware behaviour is unconfirmed, and no normal alarm control is
+enabled.
+
 `experimental_nvr_live` is off by default. Enabling it adds a consented,
 ten-second private video test to Diagnostics through exact T8N00/type 300 or
 T9000/type 27 parents. The exact camera/model pairs are T8E00/type 301,

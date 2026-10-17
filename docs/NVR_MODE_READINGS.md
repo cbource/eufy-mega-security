@@ -14,9 +14,10 @@ policy arrives before a new effective-mode report. Stale, replayed and
 out-of-order notifications cannot overwrite a newer reading.
 
 Custom titles come from the current station inventory. If no usable title is
-reported, the sensor uses `custom_1`, `custom_2` or `custom_3`. NVR mode writes
-and camera-power writes remain disabled. The gateway does not change Eufy's
-notification settings.
+reported, the sensor uses `custom_1`, `custom_2` or `custom_3`. Normal NVR mode
+writes and camera-power controls remain disabled. Separate, default-off control
+tests require explicit consent and verified restoration. The gateway does not
+change Eufy's notification settings.
 
 After updating the app and integration, restart Home Assistant and observe a
 usual schedule transition. Check whether the effective-mode sensor follows the

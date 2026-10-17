@@ -12,7 +12,7 @@ restart can prevent automatic restoration.
 
 1. Update the app and integration to the release containing this test.
 2. Enable **Experimental NVR video**, **Experimental model controls** and the
-   separate **Experimental NVR camera-power test** option. The last option is
+   separate **Experimental NVR control tests** option. The last option is
    off by default.
 3. Close all viewers for cameras sharing the NVR.
 4. Check the camera's existing power/privacy state in Eufy and record it.

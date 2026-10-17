@@ -15,6 +15,7 @@
 import { InventoryMotionClock, type InventoryMotionOutcome } from "./inventory-motion.js";
 
 import { NvrPowerError, runNvrPowerTrial, type NvrPowerRequest, type NvrPowerSummary } from "./nvr-power-trial.js";
+import { NvrGuardError, runNvrGuardTrial, type NvrGuardRequest, type NvrGuardState, type NvrGuardSummary } from "./nvr-guard-trial.js";
 import { eventPictureUrl } from "./event-picture-url.js";
 import { T85V0StatusError, validT85V0StatusIdentity, type T85V0StatusSummary } from "./t85v0-status.js";
 import { LocalMotionCollector, LocalMotionError, type LocalMotionSummary } from "../stream/local-motion-trial.js";
@@ -525,6 +526,8 @@ export class EufyProvider implements CameraProvider, CaptchaProvider {
   readonly #manualLightAborters = new Map<string, AbortController>();
   readonly #nvrPowerEntries = new Map<string, { controller: AbortController; session: NvrRtcSession | null }>();
   readonly #nvrPowerCooldowns = new Map<string, number>();
+  readonly #nvrGuardEntries = new Map<string, { controller: AbortController; session: NvrRtcSession | null }>();
+  readonly #nvrGuardCooldowns = new Map<string, number>();
   readonly #localMotionCooldowns = new Map<string, number>();
   readonly #trialSessions = new Map<string, FirstPartyPpcsSession>();
   readonly #trialSirenStops = new Map<string, { readonly cameraId: string; readonly stop: () => Promise<void>; readonly finished: Promise<void> }>();
@@ -1379,8 +1382,9 @@ export class EufyProvider implements CameraProvider, CaptchaProvider {
       this.#lightOperations, this.#panControlOperations, this.#cameraSirenOperations];
     const related = [...this.#devices.values()].filter(row => row.serial === peer.serial || row.parentSerial === peer.serial);
     if (this.#trialPeers.has(peer.serial) || this.#recordingPeerReserved(serial) || this.#recordingIndexActive
-      || this.#stationOperations.has(peer.serial) || this.#nvrPowerEntries.has(peer.serial)
-      || this.#nvrPowerCooldowns.has(peer.serial) || this.#nvrPowerCooldowns.size + this.#nvrPowerEntries.size >= 100
+      || this.#stationOperations.has(peer.serial) || this.#nvrPowerEntries.has(peer.serial) || this.#nvrGuardEntries.has(peer.serial)
+      || this.#nvrPowerCooldowns.has(peer.serial) || this.#nvrGuardCooldowns.has(peer.serial)
+      || this.#nvrPowerCooldowns.size + this.#nvrPowerEntries.size >= 100
       || [...this.#nvrTrials.values()].some(row => row.station.serial === peer.serial)
       || related.some(row => this.#ppcsStreams.has(row.serial) || this.#streamStarts.has(row.serial) || controls.some(map => map.has(row.serial)))) {
       throw new NvrPowerError("busy");
@@ -1476,6 +1480,143 @@ export class EufyProvider implements CameraProvider, CaptchaProvider {
       if (attempted) this.#nvrPowerCooldowns.set(peer.serial, performance.now() + 60_000);
       if (this.#nvrPowerEntries.get(peer.serial) === entry) {
         this.#nvrPowerEntries.delete(peer.serial); this.#trialPeers.delete(peer.serial);
+      }
+    }
+  }
+
+  /** Temporarily change one exact T8N00 from Schedule to Home and restore it. */
+  async testNvrGuardMode(serial: string, request: NvrGuardRequest, signal: AbortSignal): Promise<NvrGuardSummary> {
+    const device = this.#devices.get(serial), generation = this.#startupGeneration;
+    const station = device ? this.#devices.get(device.parentSerial) : undefined;
+    const valid = (rows: readonly MegaInventoryDevice[]): boolean => {
+      if (!device || !station || device.model !== "T8E00" || device.deviceType !== 301
+        || station.model !== "T8N00" || station.deviceType !== 300 || device.parentSerial === serial
+        || device.channel === null || !Number.isInteger(device.channel) || device.channel < 0 || device.channel > 254
+        || !device.adminUserId || device.adminUserId !== station.adminUserId
+        || !/^[A-Za-z0-9_-]{1,255}$/.test(device.adminUserId) || !this.#client.isAuthenticatedUser(device.adminUserId)) return false;
+      const children = rows.filter(row => row.serial === serial), parents = rows.filter(row => row.serial === station.serial);
+      return children.length === 1 && parents.length === 1
+        && rows.filter(row => row.serial !== station.serial && row.parentSerial === station.serial && row.channel === device.channel).length === 1
+        && !inventoryBindingChanged(device, children[0]!) && !inventoryBindingChanged(station, parents[0]!);
+    };
+    const state = (raw: unknown): NvrGuardState | null => {
+      if (!isRecord(raw) || !Array.isArray(raw.devices)) return null;
+      const matches = raw.devices.filter((row: unknown) => isRecord(row) && row.device_sn === station?.serial);
+      if (matches.length !== 1 || !isRecord(matches[0]) || !Array.isArray(matches[0].params)) return null;
+      const parameter = (type: number): unknown => matches[0]!.params.find((row: unknown) => isRecord(row)
+        && integer(row.param_type) === type)?.param_value;
+      const configured = integer(parameter(1224));
+      const schedule = parameter(1254);
+      return { mode: configured !== null && [0, 1, 2, 3, 4, 5, 47, 63].includes(configured) ? configured : null,
+        schedule: typeof schedule === "string" && schedule.length > 0 && schedule.length <= 65_536 ? schedule : null };
+    };
+    if (!this.config.experimentalNvrControls || !this.config.experimentalModelControls || !this.config.experimentalNvrLive
+      || !valid([...this.#devices.values()]) || request.target !== "home" || signal.aborted || this.#recordingClosing) {
+      throw new NvrGuardError("admission");
+    }
+    const peer = station!;
+    const now = performance.now();
+    for (const [key, until] of this.#nvrGuardCooldowns) if (until <= now) this.#nvrGuardCooldowns.delete(key);
+    const controls = [this.#cameraOperations, this.#cameraCapabilityOperations, this.#streamingQualityOperations,
+      this.#audioRecordingOperations, this.#motionOperations, this.#nightVisionOperations, this.#guardModeOperations,
+      this.#lightOperations, this.#panControlOperations, this.#cameraSirenOperations];
+    const related = [...this.#devices.values()].filter(row => row.serial === peer.serial || row.parentSerial === peer.serial);
+    if (this.#trialPeers.has(peer.serial) || this.#recordingPeerReserved(serial) || this.#recordingIndexActive
+      || this.#stationOperations.has(peer.serial) || this.#nvrPowerEntries.has(peer.serial) || this.#nvrGuardEntries.has(peer.serial)
+      || this.#nvrPowerCooldowns.has(peer.serial) || this.#nvrGuardCooldowns.has(peer.serial)
+      || this.#nvrGuardCooldowns.size + this.#nvrGuardEntries.size >= 100
+      || [...this.#nvrTrials.values()].some(row => row.station.serial === peer.serial)
+      || related.some(row => this.#ppcsStreams.has(row.serial) || this.#streamStarts.has(row.serial)
+        || controls.some(map => map.has(row.serial)))) throw new NvrGuardError("busy");
+    const entry = { controller: new AbortController(), session: null as NvrRtcSession | null };
+    this.#trialPeers.add(peer.serial); this.#nvrGuardEntries.set(peer.serial, entry);
+    let invalid = false, recovering = false, attempted = false;
+    const current = (): void => {
+      if (this.#recordingClosing || entry.controller.signal.aborted) throw new NvrGuardError("shutdown", attempted);
+      if (invalid || generation !== this.#startupGeneration || this.#nvrGuardEntries.get(peer.serial) !== entry
+        || !valid([...this.#devices.values()])) throw new NvrGuardError("identity", attempted);
+    };
+    const bounded = async <T>(operation: (owned: AbortSignal) => Promise<T>, phase: AbortSignal): Promise<T> => {
+      const ownedSignal = AbortSignal.any([phase, entry.controller.signal, AbortSignal.timeout(5_000)]);
+      current(); ownedSignal.throwIfAborted();
+      let abort!: () => void;
+      const cancelled = new Promise<never>((_resolve, reject) => {
+        abort = () => reject(new NvrGuardError("inventory", attempted));
+        ownedSignal.addEventListener("abort", abort, { once: true });
+        if (ownedSignal.aborted) abort();
+      });
+      try { const value = await Promise.race([operation(ownedSignal), cancelled]); current(); ownedSignal.throwIfAborted(); return value; }
+      finally { ownedSignal.removeEventListener("abort", abort); }
+    };
+    const inventory = async (recovery: boolean, phase: AbortSignal): Promise<NvrGuardState> => {
+      current(); phase.throwIfAborted();
+      let raw: Awaited<ReturnType<MegaClient["inventory"]>>;
+      try { raw = await bounded(cancellation => this.#client.inventory(cancellation), phase); }
+      catch (error) {
+        current(); phase.throwIfAborted();
+        if (!recovery || invalid || !entry.session) throw error instanceof NvrGuardError
+          ? error : new NvrGuardError("inventory", attempted);
+        await bounded(cancellation => entry.session!.validateGuardTrial(cancellation), phase);
+        throw new NvrGuardError("inventory", attempted);
+      }
+      try {
+        if (!Array.isArray(raw.devices) || raw.devices.filter(row => row.device_sn === serial).length !== 1
+          || raw.devices.filter(row => row.device_sn === peer.serial).length !== 1 || !valid(parseMegaInventory(raw))) {
+          throw new NvrGuardError("identity", attempted);
+        }
+      } catch { invalid = true; throw new NvrGuardError("identity", attempted); }
+      const projected = state(raw);
+      if (!projected) throw new NvrGuardError("inventory", attempted);
+      current(); return projected;
+    };
+    const deadline = setTimeout(() => entry.controller.abort(), 135_000);
+    const bindingTimer = setInterval(() => { try { current(); } catch { entry.controller.abort(); } }, 1_000);
+    const transport = {
+      prepare: async (phase: AbortSignal): Promise<void> => {
+        await inventory(false, phase); current(); phase.throwIfAborted();
+        const context = await bounded(cancellation => this.#client.nvrSignallingContext(peer.serial,
+          this.config.experimentalNvrRegion ?? "auto", cancellation), phase);
+        current(); phase.throwIfAborted();
+        entry.session = new NvrRtcSession({ station: peer.serial, camera: serial, channel: device!.channel!, cameraType: 301,
+          administrator: peer.adminUserId!, userName: peer.userName ?? "", context, signal: entry.controller.signal,
+          guardTrial: true, maximumLifetimeMilliseconds: 135_000,
+          current: () => { try { current(); return true; } catch { return false; } },
+          ready: () => { throw new NvrGuardError("identity"); } });
+        await entry.session.prepareGuardTrial(); current(); phase.throwIfAborted();
+      },
+      validate: async (recovery: boolean, phase: AbortSignal): Promise<void> => {
+        recovering = recovery;
+        await inventory(recovery, phase); current(); phase.throwIfAborted();
+        if (!entry.session) throw new NvrGuardError("identity", attempted);
+        await entry.session.validateGuardTrial(phase); current();
+      },
+      read: async (phase: AbortSignal): Promise<NvrGuardState> => inventory(recovering, phase),
+      write: async (mode: 1 | 2, phase: AbortSignal, dispatched: () => void): Promise<void> => {
+        current(); phase.throwIfAborted();
+        if (!entry.session) throw new NvrGuardError("identity", attempted);
+        await entry.session.writeGuardTrial(mode, phase, () => { current(); phase.throwIfAborted(); attempted = true; dispatched(); });
+      },
+      effective: async (mode: 1 | 2, phase: AbortSignal): Promise<void> => {
+        current(); phase.throwIfAborted();
+        if (!entry.session) throw new NvrGuardError("identity", attempted);
+        await entry.session.confirmGuardEffectiveTrial(mode, phase); current();
+      },
+      close: async (): Promise<void> => { await entry.session?.close(); },
+    };
+    try {
+      const result = await runNvrGuardTrial(transport, request, signal);
+      logger.info("nvr_guard_trial_result", "outcome=" + result.outcome
+        + " restored=true schedule_unchanged=true physical_confirmation_required=true");
+      return result;
+    } catch (error) {
+      const failure = error instanceof NvrGuardError ? error : new NvrGuardError("restore", attempted);
+      logger.warn("nvr_guard_trial_failed", `stage=${failure.stage} manual_restore_required=${failure.manualRestoreRequired}`);
+      throw failure;
+    } finally {
+      clearTimeout(deadline); clearInterval(bindingTimer); entry.controller.abort();
+      if (attempted) this.#nvrGuardCooldowns.set(peer.serial, performance.now() + 60_000);
+      if (this.#nvrGuardEntries.get(peer.serial) === entry) {
+        this.#nvrGuardEntries.delete(peer.serial); this.#trialPeers.delete(peer.serial);
       }
     }
   }
@@ -2509,6 +2650,7 @@ export class EufyProvider implements CameraProvider, CaptchaProvider {
     for (const controller of this.#localMotionAborters.values()) controller.abort();
     for (const controller of this.#manualLightAborters.values()) controller.abort();
     for (const entry of this.#nvrPowerEntries.values()) entry.controller.abort();
+    for (const entry of this.#nvrGuardEntries.values()) entry.controller.abort();
     for (const controller of this.#lockStatusAborters.values()) controller.abort();
     if (this.#stationRefreshTimer) clearInterval(this.#stationRefreshTimer);
     this.#stationRefreshTimer = null;
