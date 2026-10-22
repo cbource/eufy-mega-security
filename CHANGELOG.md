@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.194
+
+- Mitigate slow hosted CI package downloads by selecting the main Ubuntu archive, while retaining the existing package verification and test gates.
+
+- Record reporter-confirmed fresh snapshot capture for the standalone C30 on v0.1.191, while retaining the experimental option and unconfirmed physical sleep boundary.
+- Record native H.265 playback in the Home Assistant iOS app and desktop browsers on one installation, without claiming a selected transport or low-latency playback.
+
 ## 0.1.193
 
 - Add privacy-safe Home Assistant playback observations to integration diagnostics without opening cameras, including when the gateway is unavailable. This supports investigation of restart-related battery drain and does not claim to fix its cause.
