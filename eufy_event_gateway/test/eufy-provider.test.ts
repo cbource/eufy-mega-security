@@ -353,6 +353,7 @@ test("refreshes expiring DSK material without replacing non-expiring keys", () =
 test("limits timed JSON light control to the verified wall-light family", () => {
   assert.equal(supportsTimedCameraLight({ deviceType: 10005 }), true);
   assert.equal(supportsTimedCameraLight({ deviceType: 151 }), true);
+  assert.equal(supportsTimedCameraLight({ deviceType: 47 }), true);
   assert.equal(supportsTimedCameraLight({ deviceType: 61 }), false);
   assert.equal(supportsTimedCameraLight({ deviceType: 10031 }), false);
   assert.equal(supportsTimedCameraLight({ deviceType: null }), false);
@@ -360,7 +361,7 @@ test("limits timed JSON light control to the verified wall-light family", () => 
 
 test("selects the source-backed direct light protocol by camera family", () => {
   assert.equal(cameraLightControlProtocol({ deviceType: 45 }), "int-string");
-  assert.equal(cameraLightControlProtocol({ deviceType: 47 }), "int-string");
+  assert.equal(cameraLightControlProtocol({ deviceType: 47 }), "timed-json");
   assert.equal(cameraLightControlProtocol({ deviceType: 61 }), null);
   assert.equal(cameraLightControlProtocol({ deviceType: 151 }), "timed-json");
   assert.equal(cameraLightControlProtocol({ deviceType: 10005 }), "timed-json");

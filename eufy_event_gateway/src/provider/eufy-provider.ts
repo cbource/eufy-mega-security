@@ -275,10 +275,10 @@ const AUTO_NIGHT_VISION_DOORBELL_MODELS: ReadonlySet<string> = new Set([
   "T8210",
   "T8210C",
 ]);
-const TIMED_LIGHT_JSON_DEVICE_TYPES: ReadonlySet<number> = new Set([151, 10005]);
+const TIMED_LIGHT_JSON_DEVICE_TYPES: ReadonlySet<number> = new Set([151, 10005, 47]);
 
 // Type 61 acknowledged this candidate without operating the reporter's light.
-const INT_STRING_LIGHT_DEVICE_TYPES: ReadonlySet<number> = new Set([45, 47]);
+const INT_STRING_LIGHT_DEVICE_TYPES: ReadonlySet<number> = new Set([45]);
 const STANDALONE_GUARD_MODE_MODELS: ReadonlySet<string> = new Set([
   "T8170", "T8171", "T8400", "T8410", "T8442",
 ]);
