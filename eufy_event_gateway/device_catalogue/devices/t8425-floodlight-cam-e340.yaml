@@ -29,7 +29,10 @@ capabilities:
     night_vision:
       connections:
         direct:
-          status: declared
+          status: tested
+          tested_on: 2026-10-22
+          tested_by: cbource
+          notes: Standalone direct firmware 1.6.4.6 confirmed working for Off, Infrared, and Spotlight night vision modes.
         T9000:
           status: declared
       read:
@@ -43,7 +46,10 @@ capabilities:
     siren:
       connections:
         direct:
-          status: declared
+          status: tested
+          tested_on: 2026-10-22
+          tested_by: cbource
+          notes: Standalone direct firmware 1.6.4.6 confirmed working for alarm trigger and stop.
       write:
         command: 1202
         input:
