@@ -2245,7 +2245,7 @@ export class FirstPartyPpcsSession {
     if (!this.#remote) throw new Error("Night vision control session is not connected");
     const standalone = this.#options.homeBaseAttached === false
       && this.#options.standaloneNightVisionSupported === true
-      && ["T8171", "T817L"].includes(this.#options.cameraModel ?? "") && this.#options.channel === 0;
+      && ["T8171", "T817L", "T8425"].includes(this.#options.cameraModel ?? "") && this.#options.channel === 0;
     if (!this.#options.homeBaseAttached && !standalone) throw new Error("Night vision control requires a HomeBase-attached camera");
     const accountId = this.#options.accountId;
     if (!accountId) throw new Error("Night vision control account identity is unavailable");

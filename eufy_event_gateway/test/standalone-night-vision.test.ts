@@ -181,6 +181,10 @@ test("one eligibility decision gates direct identity, route and capability offer
     params: [{ param_type: 1277, param_value: "1" }] }] })[0]!;
   const route = { peer: device, homeBaseAttached: false };
   assert.equal(supportsStandaloneNightVision(device, route, true), true);
+  const t8425 = parseMegaInventory({ devices: [{ device_sn: "floodlight", device_model: "T8425", device_type: 47,
+    category: "eufy_security", device_channel: 0, member: { admin_user_id: "fixture-account" },
+    params: [{ param_type: 1277, param_value: "1" }] }] })[0]!;
+  assert.equal(supportsStandaloneNightVision(t8425, { peer: t8425, homeBaseAttached: false }, true), true);
   for (const changed of [{ model: "T8171-X" }, { deviceType: 94 }, { channel: 1 }, { adminUserId: null }, { reads: {} }]) {
     assert.equal(supportsStandaloneNightVision({ ...device, ...changed }, route, true), false);
   }

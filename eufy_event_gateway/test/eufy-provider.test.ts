@@ -360,6 +360,7 @@ test("limits timed JSON light control to the verified wall-light family", () => 
 
 test("selects the source-backed direct light protocol by camera family", () => {
   assert.equal(cameraLightControlProtocol({ deviceType: 45 }), "int-string");
+  assert.equal(cameraLightControlProtocol({ deviceType: 47 }), "int-string");
   assert.equal(cameraLightControlProtocol({ deviceType: 61 }), null);
   assert.equal(cameraLightControlProtocol({ deviceType: 151 }), "timed-json");
   assert.equal(cameraLightControlProtocol({ deviceType: 10005 }), "timed-json");
@@ -383,6 +384,8 @@ test("limits camera sirens by route and device evidence", () => {
   for (const changed of [{ model: "T817L121" }, { model: "T8171" }, { deviceType: 88 }, { channel: 1 }, { adminUserId: null }]) {
     assert.equal(supportsCameraSiren({ ...device, ...changed }, direct), false);
   }
+  const t8425 = { serial: "fixture-camera", model: "T8425", deviceType: 47, channel: 0, adminUserId: "fixture-admin", paramTypes: [] };
+  assert.equal(supportsCameraSiren(t8425, { homeBaseAttached: false, peer: { serial: t8425.serial } as MegaInventoryDevice }), true);
   assert.equal(supportsCameraSiren(device, { ...direct, peer: { ...peer, serial: "other-camera" } }), false);
   assert.equal(supportsCameraSiren(device, { homeBaseAttached: false }), false);
 });

@@ -278,7 +278,7 @@ const AUTO_NIGHT_VISION_DOORBELL_MODELS: ReadonlySet<string> = new Set([
 const TIMED_LIGHT_JSON_DEVICE_TYPES: ReadonlySet<number> = new Set([151, 10005]);
 
 // Type 61 acknowledged this candidate without operating the reporter's light.
-const INT_STRING_LIGHT_DEVICE_TYPES: ReadonlySet<number> = new Set([45]);
+const INT_STRING_LIGHT_DEVICE_TYPES: ReadonlySet<number> = new Set([45, 47]);
 const STANDALONE_GUARD_MODE_MODELS: ReadonlySet<string> = new Set([
   "T8170", "T8171", "T8400", "T8410", "T8442",
 ]);
@@ -302,13 +302,14 @@ export function cameraLightControlProtocol(
   return null;
 }
 
-/** Admit attached sirens by command evidence and the exact owned standalone C31 by native validation. */
+/** Admit attached sirens by command evidence and exact owned standalone models by native validation. */
 export function supportsCameraSiren(
   device: Pick<MegaInventoryDevice, "paramTypes"> & Partial<Pick<MegaInventoryDevice, "serial" | "model" | "deviceType" | "channel" | "adminUserId">>,
   route: Pick<PpcsStreamRoute, "homeBaseAttached"> & Partial<Pick<PpcsStreamRoute, "peer">> | null,
 ): boolean {
   if (route?.homeBaseAttached === true) return device.paramTypes.includes(1015);
-  return route?.homeBaseAttached === false && device.model === "T817L" && device.deviceType === 10_031
+  return route?.homeBaseAttached === false
+    && ((device.model === "T817L" && device.deviceType === 10_031) || (device.model === "T8425" && device.deviceType === 47))
     && device.channel === 0 && Boolean(device.serial) && route.peer?.serial === device.serial && Boolean(device.adminUserId);
 }
 
@@ -413,7 +414,9 @@ export function supportsStandaloneNightVision(
   route: Pick<PpcsStreamRoute, "homeBaseAttached" | "peer"> | null,
   routeReady: boolean,
 ): boolean {
-  return ((device.model === "T8171" && device.deviceType === 88) || (device.model === "T817L" && device.deviceType === 10_031)) && device.channel === 0
+  return ((device.model === "T8171" && device.deviceType === 88)
+    || (device.model === "T817L" && device.deviceType === 10_031)
+    || (device.model === "T8425" && device.deviceType === 47)) && device.channel === 0
     && route?.homeBaseAttached === false && route.peer.serial === device.serial
     && device.reads.nightVisionMode !== undefined && Boolean(device.adminUserId)
     && routeReady && !isDoorbellDevice(device);
