@@ -1007,7 +1007,7 @@ export function buildStandaloneJsonControlPayload(
   return rawPayload(encrypted, channel, 1, [1, 0], frameType);
 }
 
-/** Build the observed timed wall-light value carried by standalone command 1700. */
+/** Build the observed timed-light value carried by standalone command 1700. */
 export function buildTimedCameraLightControlValue(enabled: boolean): string {
   return JSON.stringify({
     commandType: 1400,
@@ -2365,7 +2365,7 @@ export class FirstPartyPpcsSession {
     await this.#sendControlPayload(1400, { value: enabled ? 1 : 0, transaction: `${Date.now()}` });
   }
 
-  /** Send the standalone wall-light family's momentary on or off command. */
+  /** Send a provider-admitted standalone timed-light on or off command. */
   async writeTimedCameraLight(enabled: boolean): Promise<void> {
     if (this.#alarmRead) throw new Error("Alarm state read owns this session");
     if (this.#options.purpose !== "control") throw new Error("Camera light control requires a control session");
